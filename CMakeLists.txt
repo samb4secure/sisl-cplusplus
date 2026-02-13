@@ -12,20 +12,28 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/nlohmann/json.git
     GIT_TAG v3.11.3
 )
-FetchContent_MakeAvailable(json)
+
+FetchContent_Declare(
+    pugixml
+    GIT_REPOSITORY https://github.com/zeux/pugixml.git
+    GIT_TAG v1.14
+)
+
+FetchContent_MakeAvailable(json pugixml)
 
 add_executable(sislc
     src/main.cpp
     src/sisl_lexer.cpp
     src/sisl_parser.cpp
     src/sisl_codec.cpp
+    src/xml_codec.cpp
     src/merge.cpp
     src/split.cpp
     src/unicode_escape.cpp
 )
 
 target_include_directories(sislc PRIVATE src)
-target_link_libraries(sislc PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(sislc PRIVATE nlohmann_json::nlohmann_json pugixml::pugixml)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(sislc PRIVATE -Wall -Wextra -Wpedantic)
