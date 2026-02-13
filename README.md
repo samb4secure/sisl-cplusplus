@@ -1,6 +1,6 @@
 # sisl-c++
 
-A C++ application for serialising and deserialising SISL, compatible with [pysisl](https://pypi.org/project/pysisl/). Supports JSON and XML as interchange formats.
+A C++ application for serialising and deserialising SISL, compatible with [pysisl](https://pypi.org/project/pysisl/). Supports JSON and some support of XML as interchange formats.
 
 ## What is SISL?
 
@@ -180,7 +180,11 @@ Both flags are optional and can be used independently — for example, `--input`
 
 ### XML Format
 
-The XML format uses a `<root>` element. Each child element carries a `type` attribute to preserve the data type through serialisation.
+The XML codec operates in two modes, selected automatically based on the input.
+
+#### Typed XML (JSON-compatible)
+
+Used when the input XML has a `<root>` element and its children carry `type` attributes. This mode preserves JSON data types exactly.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -208,6 +212,87 @@ The XML format uses a `<root>` element. Each child element carries a `type` attr
 | `null` | null | Self-closing element, no text content |
 | `list` | array | Children are `<item>` elements, order from document order |
 | `obj` | object | Children are named elements |
+
+#### Generic XML (Arbitrary XML)
+
+Used for any XML that doesn't match the typed format — for example, Windows Event Log exports, SOAP messages, configuration files, or any third-party XML. The codec converts the XML structure into a JSON representation that preserves tag names, attributes, text content, and element hierarchy.
+
+```bash
+# Convert arbitrary XML to SISL
+./sislc --dumps --xml --input events.xml --output events.sisl
+
+# Convert back to XML
+./sislc --loads --xml --input events.sisl --output events_roundtrip.xml
+```
+
+The JSON representation uses these keys:
+
+| Key | Present | Description |
+|---|---|---|
+| `_decl` | If XML declaration exists | Object of declaration attributes (`version`, `encoding`, `standalone`) |
+| `_root` | Always | The root element (see below) |
+| `_tag` | Always (on elements) | Element tag name |
+| `_attrs` | If element has attributes | Object of attribute name-value pairs |
+| `_text` | If element has text-only content | The text content as a string |
+| `_children` | If element has child elements | Array of child element objects |
+
+Example — this XML:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<Events>
+  <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+      <Provider Name="nssm"/>
+      <EventID Qualifiers="16384">1008</EventID>
+      <Security/>
+    </System>
+  </Event>
+</Events>
+```
+
+Produces this JSON intermediate (shown as SISL):
+
+```
+{_decl: !obj {version: !str "1.0", encoding: !str "utf-8"},
+ _root: !obj {_tag: !str "Events", _children: !list {
+   _0: !obj {_tag: !str "Event", _attrs: !obj {xmlns: !str "http://..."}, _children: !list {
+     _0: !obj {_tag: !str "System", _children: !list {
+       _0: !obj {_tag: !str "Provider", _attrs: !obj {Name: !str "nssm"}},
+       _1: !obj {_tag: !str "EventID", _attrs: !obj {Qualifiers: !str "16384"}, _text: !str "1008"},
+       _2: !obj {_tag: !str "Security"}}}}}}}}
+```
+
+**Auto-detection rules:**
+
+| Direction | Typed Mode | Generic Mode |
+|---|---|---|
+| XML to SISL | `<root>` element + first child has `type` attribute | Everything else |
+| SISL to XML | JSON has no `_root` key | JSON has `_root` key |
+
+#### Generic XML Limitations
+
+The following XML features are not preserved through a generic round-trip:
+
+| Feature | Behaviour |
+|---|---|
+| Mixed content (text between child elements) | Interleaved text nodes are dropped; only child elements are kept |
+| XML comments (`<!-- ... -->`) | Silently stripped |
+| Processing instructions (`<?target ...?>`) | Stripped (except the `<?xml?>` declaration) |
+| CDATA sections (`<![CDATA[...]]>`) | Normalized to plain text |
+| DOCTYPE declarations | Blocked (disabled for security) |
+| Namespace-prefixed attribute names (`xmlns:prefix`) | Encoded to SISL but cannot be decoded back — colons in key names conflict with SISL's `:` separator |
+| Whitespace-only text content | Dropped by the XML parser |
+| `--max-length` splitting | Ineffective — the entire document nests under a single `_root` key, so the splitter cannot break it into smaller pieces |
+
+**Formatting differences in output:**
+
+The output XML is structurally equivalent to the input but may differ cosmetically:
+
+- Indentation uses tabs (regardless of original indentation)
+- Attributes always use double quotes
+- Empty elements use self-closing form with a space (`<Tag />`)
+- Attributes are always on the same line as the opening tag
 
 ## Exit Codes
 

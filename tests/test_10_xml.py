@@ -265,14 +265,18 @@ class TestXmlErrors:
             sislc.dumps_xml("<not-closed>")
 
     def test_missing_root(self, sislc):
-        """XML without <root> element produces an error."""
-        with pytest.raises(RuntimeError, match="--dumps --xml failed"):
-            sislc.dumps_xml('<?xml version="1.0"?><data><x type="str">y</x></data>')
+        """XML without <root> element is handled by generic mode."""
+        sisl_out = sislc.dumps_xml('<?xml version="1.0"?><data><x type="str">y</x></data>')
+        result = sislc.loads(sisl_out)
+        assert "_root" in result
+        assert result["_root"]["_tag"] == "data"
 
     def test_missing_type_attribute(self, sislc):
-        """Element without type attribute produces an error."""
-        with pytest.raises(RuntimeError, match="--dumps --xml failed"):
-            sislc.dumps_xml("<root><name>Alice</name></root>")
+        """Element without type attribute is handled by generic mode."""
+        sisl_out = sislc.dumps_xml("<root><name>Alice</name></root>")
+        result = sislc.loads(sisl_out)
+        assert "_root" in result
+        assert result["_root"]["_tag"] == "root"
 
     def test_invalid_type(self, sislc):
         """Unknown type attribute produces an error."""

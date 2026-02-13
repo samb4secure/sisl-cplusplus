@@ -152,6 +152,137 @@ json decode_element(const pugi::xml_node& node) {
     throw XmlError("Unknown type: " + type);
 }
 
+// --- Generic XML mode helpers ---
+
+// Check if a parsed XML document uses the typed format (<root> + type attributes)
+bool is_typed_xml(const pugi::xml_document& doc) {
+    pugi::xml_node root = doc.child("root");
+    if (!root) return false;
+    for (pugi::xml_node child = root.first_child(); child; child = child.next_sibling()) {
+        if (child.type() == pugi::node_element) {
+            return !child.attribute("type").empty();
+        }
+    }
+    // Empty <root> — treat as typed (backwards compat)
+    return true;
+}
+
+// Check if JSON uses the generic representation (_root key present)
+bool is_generic_json(const json& j) {
+    return j.is_object() && j.contains("_root");
+}
+
+// Recursively convert a pugixml element node to generic JSON representation
+json parse_generic_element(const pugi::xml_node& node) {
+    json elem = json::object();
+    elem["_tag"] = std::string(node.name());
+
+    // Attributes (including namespace declarations like xmlns)
+    if (node.first_attribute()) {
+        json attrs = json::object();
+        for (pugi::xml_attribute attr = node.first_attribute(); attr; attr = attr.next_attribute()) {
+            attrs[attr.name()] = std::string(attr.value());
+        }
+        elem["_attrs"] = attrs;
+    }
+
+    // Check for child elements
+    bool has_child_elements = false;
+    for (pugi::xml_node child = node.first_child(); child; child = child.next_sibling()) {
+        if (child.type() == pugi::node_element) {
+            has_child_elements = true;
+            break;
+        }
+    }
+
+    if (has_child_elements) {
+        json children = json::array();
+        for (pugi::xml_node child = node.first_child(); child; child = child.next_sibling()) {
+            if (child.type() == pugi::node_element) {
+                children.push_back(parse_generic_element(child));
+            }
+        }
+        elem["_children"] = children;
+    } else {
+        // Text-only or empty element
+        std::string text = node.child_value();
+        if (!text.empty()) {
+            elem["_text"] = text;
+        }
+    }
+
+    return elem;
+}
+
+// Convert a generic XML document to JSON
+json xml_to_json_generic(const pugi::xml_document& doc) {
+    json result = json::object();
+
+    // Capture XML declaration
+    for (pugi::xml_node node = doc.first_child(); node; node = node.next_sibling()) {
+        if (node.type() == pugi::node_declaration) {
+            json decl = json::object();
+            for (pugi::xml_attribute attr = node.first_attribute(); attr; attr = attr.next_attribute()) {
+                decl[attr.name()] = std::string(attr.value());
+            }
+            result["_decl"] = decl;
+            break;
+        }
+    }
+
+    // Find first element node as root
+    for (pugi::xml_node node = doc.first_child(); node; node = node.next_sibling()) {
+        if (node.type() == pugi::node_element) {
+            result["_root"] = parse_generic_element(node);
+            break;
+        }
+    }
+
+    return result;
+}
+
+// Recursively build pugixml nodes from generic JSON element representation
+void build_generic_element(pugi::xml_node& parent, const json& elem) {
+    std::string tag = elem.at("_tag").get<std::string>();
+    pugi::xml_node node = parent.append_child(tag.c_str());
+
+    if (elem.contains("_attrs")) {
+        for (auto it = elem["_attrs"].begin(); it != elem["_attrs"].end(); ++it) {
+            node.append_attribute(it.key().c_str()).set_value(it.value().get<std::string>().c_str());
+        }
+    }
+
+    if (elem.contains("_children")) {
+        for (const auto& child : elem["_children"]) {
+            build_generic_element(node, child);
+        }
+    } else if (elem.contains("_text")) {
+        node.append_child(pugi::node_pcdata).set_value(elem["_text"].get<std::string>().c_str());
+    }
+}
+
+// Convert generic JSON representation back to XML string
+std::string json_to_xml_generic(const json& j) {
+    pugi::xml_document doc;
+
+    // Create declaration from _decl
+    if (j.contains("_decl")) {
+        pugi::xml_node decl = doc.prepend_child(pugi::node_declaration);
+        for (auto it = j["_decl"].begin(); it != j["_decl"].end(); ++it) {
+            decl.append_attribute(it.key().c_str()).set_value(it.value().get<std::string>().c_str());
+        }
+    }
+
+    // Build root element from _root
+    if (j.contains("_root")) {
+        build_generic_element(doc, j["_root"]);
+    }
+
+    std::ostringstream oss;
+    doc.save(oss, "\t");
+    return oss.str();
+}
+
 } // anonymous namespace
 
 std::string json_to_xml(const json& j) {
@@ -159,6 +290,12 @@ std::string json_to_xml(const json& j) {
         throw XmlError("Top-level value must be a JSON object");
     }
 
+    // Route: generic mode if _root key is present
+    if (is_generic_json(j)) {
+        return json_to_xml_generic(j);
+    }
+
+    // Typed mode (original behavior)
     pugi::xml_document doc;
     pugi::xml_node decl = doc.prepend_child(pugi::node_declaration);
     decl.append_attribute("version").set_value("1.0");
@@ -177,23 +314,25 @@ std::string json_to_xml(const json& j) {
 
 json xml_to_json(const std::string& xml_str) {
     pugi::xml_document doc;
-    constexpr unsigned int parse_flags = pugi::parse_default & ~pugi::parse_doctype;
+    constexpr unsigned int parse_flags =
+        (pugi::parse_default & ~pugi::parse_doctype) | pugi::parse_declaration;
     pugi::xml_parse_result result = doc.load_string(xml_str.c_str(), parse_flags);
 
     if (!result) {
         throw XmlError(std::string("XML parse error: ") + result.description());
     }
 
-    pugi::xml_node root = doc.child("root");
-    if (!root) {
-        throw XmlError("Missing <root> element");
+    // Route: typed mode if <root> + type attributes, generic otherwise
+    if (is_typed_xml(doc)) {
+        pugi::xml_node root = doc.child("root");
+        json obj = json::object();
+        for (pugi::xml_node child = root.first_child(); child; child = child.next_sibling()) {
+            obj[child.name()] = decode_element(child);
+        }
+        return obj;
     }
 
-    json obj = json::object();
-    for (pugi::xml_node child = root.first_child(); child; child = child.next_sibling()) {
-        obj[child.name()] = decode_element(child);
-    }
-    return obj;
+    return xml_to_json_generic(doc);
 }
 
 } // namespace sisl

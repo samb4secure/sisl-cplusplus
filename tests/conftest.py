@@ -51,6 +51,21 @@ def sislc():
             return json.loads(result.stdout.strip())
 
         @staticmethod
+        def loads_raw(sisl_input):
+            """Convert SISL to raw JSON string using sislc (no Python parse)."""
+            if isinstance(sisl_input, list):
+                sisl_input = json.dumps(sisl_input)
+            result = subprocess.run(
+                [SISLC_PATH, "--loads"],
+                input=sisl_input,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"sislc --loads failed: {result.stderr}")
+            return result.stdout.strip()
+
+        @staticmethod
         def dumps_raw(json_str, max_length=None):
             """Convert raw JSON string to SISL using sislc."""
             cmd = [SISLC_PATH, "--dumps"]
